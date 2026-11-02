@@ -1,0 +1,40 @@
+---
+title: "ML-Project"
+output: html_document
+---
+```{r}
+suppressPackageStartupMessages({
+  library(tidyverse)
+  library(ranger)
+  library(caret)
+})
+
+set.seed(1)
+
+# 2. Load Data
+historic <- read.csv("historic_property_data.csv", stringsAsFactors = FALSE)
+predict_data <- read.csv("predict_property_data.csv", stringsAsFactors = FALSE)
+
+# 3. Clean & Preprocess Data
+clean_data <- function(df, is_train = TRUE) {
+  df <- df %>%
+    mutate(
+      # Target log transformation (only for training)
+      log_price = if (is_train) log(sale_price) else NA_real_,
+      
+      # Clean key numerical features
+      char_bldg_sf = ifelse(is.na(char_bldg_sf), median(char_bldg_sf, na.rm = TRUE), char_bldg_sf),
+      char_land_sf = ifelse(is.na(char_land_sf), median(char_land_sf, na.rm = TRUE), char_land_sf),
+      char_age     = ifelse(is.na(char_age), median(char_age, na.rm = TRUE), char_age),
+      char_beds    = ifelse(is.na(char_beds), 0, char_beds),
+      char_rooms   = ifelse(is.na(char_rooms), 0, char_rooms),
+      
+      # Convert structural and geographic identifiers to factors
+      meta_town_code = as.factor(meta_town_code)
+    )
+  return(df)
+}
+
+train_clean <- clean_data(historic, is_train = TRUE)
+test_clean  <- clean_data(predict_data, is_train = FALSE)
+```
