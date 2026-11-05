@@ -439,3 +439,25 @@ cat("Cross-Validated RMSE: $",
 cat("Cross-Validated MAE:  $",
     format(round(cv_results$MAE[1]), big.mark = ","), "\n", sep = "")
 ```
+
+## Incremental Models
+```{r}
+library(dplyr)
+```
+
+First, let's remove categoricals that have more than 5 levels, since they will harm interpretability
+```{r}
+xh_copy <- copy(x_historic)
+xn_copy <- copy(x_new)
+
+for (col in names(xh_copy)){
+  
+  if ((n_distinct(xh_copy[col]) > 5) & (is.factor(xh_copy[[col]]) | is.character(xh_copy[[col]]))){
+    xh_copy = xh_copy[,-which(col == names(xh_copy))]
+    xn_copy = xn_copy[,-which(col == names(xn_copy))]
+  }
+}
+xh_copy <- select(xh_copy,-c("meta_town_code","meta_nbhd"), -starts_with("geo"))
+xn_copy <- select(xn_copy,-c("meta_town_code","meta_nbhd"), -starts_with("geo"))
+str(xh_copy)
+```
