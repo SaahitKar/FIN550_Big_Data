@@ -42,6 +42,13 @@ clean_data <- function(df, is_train = TRUE) {
       df[cat] =  as.factor(df[[cat]])
     }
   }
+  df[] <- lapply(df, function(x) {
+  if (is.logical(x) || is.character(x)) {
+    as.factor(x)  
+  } else {
+    x  
+  }
+})
 
   return(df)
 }
