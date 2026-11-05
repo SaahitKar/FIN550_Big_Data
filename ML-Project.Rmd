@@ -2,69 +2,440 @@
 title: "ML-Project"
 output: html_document
 ---
-```{r}
+
+``` {r Part 1}
+#Download Packages
+required_packages <- c("data.table", "Matrix", "glmnet", "xgboost", "ggplot2")
+missing_packages <- required_packages[
+  !vapply(required_packages, requireNamespace, logical(1), quietly = TRUE)
+]
+
 suppressPackageStartupMessages({
-  library(tidyverse)
-  library(ranger)
-  library(caret)
+  library(data.table)
+  library(Matrix)
+  library(glmnet)
+  library(xgboost)
+  library(ggplot2)
 })
-
-set.seed(1)
-
-# 2. Load Data
-historic <- read.csv("historic_property_data.csv")
-predict_data <- read.csv("predict_property_data.csv")
-codebook <- read.csv("codebook.csv")
-
-# 3. Clean & Preprocess Data
-clean_data <- function(df, is_train = TRUE) {
-  
-  df <- df %>%
-    mutate(
-      # Target log transformation (only for training)
-      log_price = if (is_train) log(sale_price) else NA_real_,
-      
-      # Clean key numerical features
-      char_bldg_sf = ifelse(is.na(char_bldg_sf), median(char_bldg_sf, na.rm = TRUE), char_bldg_sf),
-      char_hd_sf = ifelse(is.na(char_hd_sf), median(char_hd_sf, na.rm = TRUE), char_hd_sf),
-      char_age     = ifelse(is.na(char_age), median(char_age, na.rm = TRUE), char_age),
-      char_beds    = ifelse(is.na(char_beds), 0, char_beds),
-      char_rooms   = ifelse(is.na(char_rooms), 0, char_rooms),
-      
-      # Convert structural and geographic identifiers to factors
-      meta_town_code = as.factor(meta_town_code),
-      geo_ohare_noise = as.factor(geo_ohare_noise),
-      geo_floodplain = as.factor(geo_floodplain),
-      geo_fs_flood_factor = as.factor(geo_fs_flood_factor),
-      geo_fs_flood_risk_direction = as.factor(geo_fs_flood_risk_direction),
-      geo_withinmr100 = as.factor(geo_withinmr100),
-      geo_withinmr101300 = as.factor(geo_withinmr101300)
-    )
-  cats = 
-    unique(
-      codebook[codebook$var_data_type == 'categorical',"var_name_standard"]
-      )
-  for (cat in cats){
-    if (cat %in% names(df)){
-      df[cat] =  as.factor(df[[cat]])
-    }
-  }
-  df[] <- lapply(df, function(x) {
-  if (is.logical(x) || is.character(x)) {
-    as.factor(x)  
-  } else {
-    x  
-  }
-})
-
-  return(df)
-}
-
-train_clean <- clean_data(historic, is_train = TRUE)
-test_clean  <- clean_data(predict_data, is_train = FALSE)
 ```
 
-```{r}
-library(randomForest)
-str(train_clean)
+``` {r Part 2}
+#Setup Seed & Files
+set.seed(28)
+N_FOLDS <- 5
+XGB_NROUNDS <- 500
+
+historic_path <- file.path(".", "historic_property_data.csv")
+predict_path <- file.path(".", "predict_property_data.csv")
+```
+
+``` {r Part 3}
+#Read in Data from Files
+historic <- fread(historic_path, na.strings = c("", "NA", "N/A", "NULL"))
+new_properties <- fread(predict_path, na.strings = c("", "NA", "N/A", "NULL"))
+
+historic[, sale_price := suppressWarnings(as.numeric(sale_price))]
+historic <- historic[is.finite(sale_price) & sale_price > 0]
+```
+
+``` {r Part 4}
+#Setup Possible Predictors for Models
+candidate_predictors <- c(
+  "meta_town_code",
+  "meta_nbhd",
+  "char_hd_sf",
+  "char_age",
+  "char_apts",
+  "char_ext_wall",
+  "char_roof_cnst",
+  "char_rooms",
+  "char_beds",
+  "char_bsmt",
+  "char_bsmt_fin",
+  "char_heat",
+  "char_oheat",
+  "char_air",
+  "char_frpl",
+  "char_attic_type",
+  "char_fbath",
+  "char_hbath",
+  "char_tp_plan",
+  "char_tp_dsgn",
+  "char_gar1_size",
+  "char_bldg_sf",
+  "char_type_resd",
+  "char_attic_fnsh",
+  "char_porch",
+  "geo_property_city",
+  "geo_property_zip",
+  "geo_ohare_noise",
+  "geo_floodplain",
+  "geo_fs_flood_factor",
+  "geo_fs_flood_risk_direction",
+  "geo_withinmr100",
+  "geo_withinmr101300",
+  "geo_school_elem_district",
+  "geo_school_hs_district",
+  "econ_tax_rate",
+  "econ_midincome",
+  "ind_garage",
+  "ind_arms_length"
+)
+
+#Ensure Columns Exist in Both Files & Can Be Used
+predictors <- intersect(candidate_predictors, names(historic))
+predictors <- intersect(predictors, names(new_properties))
+```
+
+``` {r Part 5}
+#Convert Predictors to Factors for Models To Utilize 
+prepare_raw_features <- function(data, predictor_names) {
+  out <- as.data.frame(data[, ..predictor_names])
+  for (nm in names(out)) {
+    x <- out[[nm]]
+    if (is.logical(x)) {
+      out[[nm]] <- factor(ifelse(is.na(x), NA_character_,
+                                 ifelse(x, "TRUE", "FALSE")))
+    } else if (is.character(x)) {
+      out[[nm]] <- factor(x)
+    } else if (is.factor(x)) {
+      out[[nm]] <- x
+    } else {
+      out[[nm]] <- suppressWarnings(as.numeric(x))
+    }
+  }
+  out
+}
+
+#Prepare Features for Analysis in Historic & New Set
+x_historic <- prepare_raw_features(historic, predictors)
+x_new <- prepare_raw_features(new_properties, predictors)
+y <- historic$sale_price
+```
+
+``` {r Part 6}
+#Preprocess Sparse Matrix
+make_design_matrices <- function(train_x, assessment_x) {
+  train_x <- as.data.frame(train_x)
+  assessment_x <- as.data.frame(assessment_x)
+  
+  #For each feature, create the train value set
+  for (nm in names(train_x)) {
+    if (is.numeric(train_x[[nm]])) {
+      #if feature is numeric, fill values
+      train_values <- train_x[[nm]][is.finite(train_x[[nm]])]
+      fill_value <- if (length(train_values) == 0) {
+        0
+      } else {
+        median(train_values)
+      }
+
+      train_x[[nm]][!is.finite(train_x[[nm]])] <- fill_value
+      assessment_x[[nm]][!is.finite(assessment_x[[nm]])] <- fill_value
+
+    } else {
+      #if feature is char, train values & known levels
+      train_values <- as.character(train_x[[nm]])
+      assessment_values <- as.character(assessment_x[[nm]])
+      train_values[is.na(train_values) | train_values == ""] <- "Missing"
+      assessment_values[is.na(assessment_values) |
+                          assessment_values == ""] <- "Missing"
+      #Scan Over Assessed Values for Any Missings
+      known_levels <- unique(c(train_values, "Missing", "Other"))
+      assessment_values[!assessment_values %in% known_levels] <- "Other"
+      train_x[[nm]] <- factor(train_values, levels = known_levels)
+      assessment_x[[nm]] <- factor(assessment_values, levels = known_levels)
+    }
+  }
+  combined <- rbind(train_x, assessment_x)
+
+  #Utilize One-Hot Encoding for Factors
+  full_matrix <- Matrix::sparse.model.matrix(~ . - 1, data = combined)
+  n_train <- nrow(train_x)
+  x_train <- full_matrix[seq_len(n_train), , drop = FALSE]
+  x_assess <- full_matrix[(n_train + 1):nrow(full_matrix), , drop = FALSE]
+
+  #Remove Any Non-Predictive Columns 
+  train_means <- Matrix::colMeans(x_train)
+  train_sq_means <- Matrix::colMeans(x_train ^ 2)
+  train_vars <- pmax(train_sq_means - train_means ^ 2, 0)
+  keep <- which(train_vars > 1e-12)
+
+  #Create Train & train List
+  list(
+    x_train = x_train[, keep, drop = FALSE],
+    x_assess = x_assess[, keep, drop = FALSE]
+  )
+}
+```
+
+``` {r Part 7}
+#Build Baseline Model
+baseline_predict <- function(train_data, assess_data) {
+  baseline_vars <- c("char_bldg_sf", "char_hd_sf", "char_age")
+  baseline_vars <- intersect(baseline_vars, names(train_data))
+
+  if (length(baseline_vars) == 0) {
+    return(rep(mean(train_data$sale_price), nrow(assess_data)))
+  }
+  
+  #Build Baseline Train & Test Sets
+  baseline_train <- as.data.frame(train_data[, ..baseline_vars])
+  baseline_assess <- as.data.frame(assess_data[, ..baseline_vars])
+  
+  #Check that Baseline Models are Numeric
+  for (nm in baseline_vars) {
+    baseline_train[[nm]] <- suppressWarnings(as.numeric(baseline_train[[nm]]))
+    baseline_assess[[nm]] <- suppressWarnings(as.numeric(baseline_assess[[nm]]))
+
+    med <- median(baseline_train[[nm]][is.finite(baseline_train[[nm]])],
+                  na.rm = TRUE)
+    if (!is.finite(med)) med <- 0
+    
+    baseline_train[[nm]][!is.finite(baseline_train[[nm]])] <- med
+    baseline_assess[[nm]][!is.finite(baseline_assess[[nm]])] <- med
+  }
+  
+  #Setup Training Set & Run Model
+  model_data <- baseline_train
+  model_data$sale_price <- train_data$sale_price
+  
+  fit <- lm(sale_price ~ ., data = model_data)
+  pred <- predict(fit, newdata = baseline_assess)
+  
+  #Check for Predictions are Finite
+  pred[!is.finite(pred)] <- mean(train_data$sale_price)
+  pmax(pred, 0)
+}
+```
+
+``` {r Part 7}
+#Cross-Validate MSE for Models 
+set.seed(38)
+fold_id <- sample(rep(seq_len(N_FOLDS), length.out = nrow(historic)))
+
+#Setup Models
+oof_baseline <- rep(NA_real_, nrow(historic))
+oof_lasso <- rep(NA_real_, nrow(historic))
+oof_xgb <- rep(NA_real_, nrow(historic))
+
+#Setup Folds for K-Fold Method for Cross-Validation
+for (fold in seq_len(N_FOLDS)) {
+  assessment_rows <- which(fold_id == fold)
+  training_rows <- which(fold_id != fold)
+  fold_train <- historic[training_rows]
+  fold_assess <- historic[assessment_rows]
+
+  x_train_raw <- x_historic[training_rows, , drop = FALSE]
+  x_assess_raw <- x_historic[assessment_rows, , drop = FALSE]
+
+  #Setup OLS Linear Regresssion
+  oof_baseline[assessment_rows] <- baseline_predict(
+    fold_train, fold_assess
+  )
+
+  #Preprocess Per Fold for Models
+  design <- make_design_matrices(x_train_raw, x_assess_raw)
+  
+  x_train <- design$x_train
+  x_assess <- design$x_assess
+  y_train <- fold_train$sale_price
+
+  #Setup LASSO Model with 5-Fold Validation
+  set.seed(29 + fold)
+  lasso_fit <- cv.glmnet(
+    x = x_train,
+    y = y_train,
+    alpha = 1,
+    nfolds = 5,
+    type.measure = "mse",
+    standardize = TRUE,
+    family = "gaussian"
+  )
+  
+  #Setup LASSO Predictions
+  lasso_pred <- as.numeric(
+    predict(lasso_fit, newx = x_assess, s = "lambda.min")
+  )
+  lasso_pred[!is.finite(lasso_pred)] <- mean(y_train)
+  oof_lasso[assessment_rows] <- pmax(lasso_pred, 0)
+
+  #Setup XGBoost Model
+  dtrain <- xgb.DMatrix(data = x_train, label = y_train)
+  dassess <- xgb.DMatrix(data = x_assess)
+
+  xgb_params <- list(
+    objective = "reg:squarederror",
+    eval_metric = "rmse",
+    eta = 0.04,
+    max_depth = 6,
+    min_child_weight = 5,
+    subsample = 0.80,
+    colsample_bytree = 0.80,
+    lambda = 5,
+    alpha = 0
+  )
+  
+  #Setup XGBoost Predictions
+  set.seed(49 + fold)
+  xgb_fit <- xgb.train(
+    params = xgb_params,
+    data = dtrain,
+    nrounds = XGB_NROUNDS,
+    verbose = 0
+  )
+  
+  xgb_pred <- as.numeric(predict(xgb_fit, dassess))
+  xgb_pred[!is.finite(xgb_pred)] <- mean(y_train)
+  oof_xgb[assessment_rows] <- pmax(xgb_pred, 0)
+}
+```
+
+``` {r Part 8}
+#Compare RMSEs for Each Model
+calculate_metrics <- function(actual, predicted) {
+  mse <- mean((actual - predicted)^2, na.rm = TRUE)
+  rmse <- sqrt(mse)
+  mae <- mean(abs(actual - predicted), na.rm = TRUE)
+
+  c(MSE = mse, RMSE = rmse, MAE = mae)
+}
+
+#Check for Cross-Validated RMSE results
+cv_results <- rbind(
+  Baseline_Linear = calculate_metrics(y, oof_baseline),
+  LASSO = calculate_metrics(y, oof_lasso),
+  XGBoost = calculate_metrics(y, oof_xgb)
+)
+
+#Gather Cross-Validated Results
+cv_results <- as.data.frame(cv_results)
+cv_results$model <- rownames(cv_results)
+rownames(cv_results) <- NULL
+cv_results <- cv_results[, c("model", "MSE", "RMSE", "MAE")]
+cv_results <- cv_results[order(cv_results$MSE), ]
+
+#Print Best Model Based on CV MSE
+cat("\nCross-Validated Model Performance (Dollars):\n")
+print(cv_results, row.names = FALSE)
+fwrite(cv_results, file.path(DATA_DIR, "model_cv_results.csv"))
+best_model <- cv_results$model[1]
+message("\nBest Model on Cross-Validated MSE >>> ", best_model)
+```
+
+``` {r Part 9}
+#Refit Model with Historical Observations
+final_design <- make_design_matrices(x_historic, x_new)
+x_full <- final_design$x_train
+x_prediction <- final_design$x_assess
+
+#Check which Model is the Best
+if (best_model == "Baseline_Linear") {
+  final_predictions <- baseline_predict(historic, new_properties)
+
+} else if (best_model == "LASSO") { #if best model is lasso, then create final LASSO model
+  set.seed(39)
+  final_lasso <- cv.glmnet(
+    x = x_full,
+    y = y,
+    alpha = 1,
+    nfolds = 5,
+    type.measure = "mse",
+    standardize = TRUE,
+    family = "gaussian"
+  )
+  
+  #Create Final Predictions from Historic LASSO Model
+  final_predictions <- as.numeric(
+    predict(final_lasso, newx = x_prediction, s = "lambda.min")
+  )
+
+} else { #if best model is xgboost, then create final XGBoost model
+  dtrain_full <- xgb.DMatrix(data = x_full, label = y)
+  dpredict <- xgb.DMatrix(data = x_prediction)
+
+  final_xgb <- xgb.train(
+    params = xgb_params,
+    data = dtrain_full,
+    nrounds = XGB_NROUNDS,
+    verbose = 0
+  )
+
+  #Create Final Predictions from Historic XGBoost Model
+  final_predictions <- as.numeric(predict(final_xgb, dpredict))
+}
+
+fallback_value <- median(y, na.rm = TRUE)
+final_predictions[!is.finite(final_predictions)] <- fallback_value
+final_predictions <- pmax(final_predictions, 0)
+```
+
+``` {r Part Part 10}
+#Export Required File
+assessment_output <- data.table(
+  pid = new_properties$pid,
+  assessed = as.numeric(final_predictions)
+)
+
+#Write to File
+fwrite(
+  assessment_output,
+  file = file.path(DATA_DIR, "assessed.csv")
+)
+```
+
+``` {r Part 11}
+#Create the Diagnostic Figure for Presentation
+plot_data <- data.frame(
+  Model = factor(
+    cv_results$model,
+    levels = cv_results$model
+  ),
+  RMSE = cv_results$RMSE
+)
+
+#Create Performance Plot File
+performance_plot <- ggplot(plot_data, aes(x = Model, y = RMSE)) +
+  geom_col() +
+  geom_text(
+    aes(label = paste0("$", format(round(RMSE), big.mark = ","))),
+    vjust = -0.35,
+    size = 4
+  ) +
+  labs(
+    title = paste0(
+      "Cross-Validated RMSE"
+    ),
+    subtitle = "Five-Fold Comparison",
+    x = "Model",
+    y = "RMSE (USD)"
+  ) +
+  scale_y_continuous(
+    labels = function(x) paste0("$", format(x, big.mark = ",")),
+    expand = expansion(mult = c(0, 0.15))
+  ) +
+  theme_minimal(base_size = 13) +
+  theme(
+    plot.title = element_text(face = "bold"),
+    axis.text.x = element_text(angle = 15, hjust = 1)
+  )
+
+ggsave(
+  filename = file.path(DATA_DIR, "model_diagnostics.png"),
+  plot = performance_plot,
+  width = 9,
+  height = 6,
+  dpi = 300
+)
+```
+
+``` {r Part 12}
+#Create a Summary 
+cat("Selected Model: ", best_model, "\n", sep = "")
+cat("Cross-Validated MSE:  $",
+    format(round(cv_results$MSE[1]), big.mark = ","), "\n", sep = "")
+cat("Cross-Validated RMSE: $",
+    format(round(cv_results$RMSE[1]), big.mark = ","), "\n", sep = "")
+cat("Cross-Validated MAE:  $",
+    format(round(cv_results$MAE[1]), big.mark = ","), "\n", sep = "")
 ```
