@@ -32,6 +32,13 @@ clean_data <- function(df, is_train = TRUE) {
       char_rooms   = ifelse(is.na(char_rooms), 0, char_rooms),
       
       # Convert structural and geographic identifiers to factors
+      meta_town_code = as.factor(meta_town_code),
+      geo_ohare_noise = as.factor(geo_ohare_noise),
+      geo_floodplain = as.factor(geo_floodplain),
+      geo_fs_flood_factor = as.factor(geo_fs_flood_factor),
+      geo_fs_flood_risk_direction = as.factor(geo_fs_flood_risk_direction),
+      geo_withinmr100 = as.factor(geo_withinmr100),
+      geo_withinmr101300 = as.factor(geo_withinmr101300)
     )
   cats = 
     unique(
