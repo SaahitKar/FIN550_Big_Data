@@ -9,6 +9,7 @@ required_packages <- c("data.table", "Matrix", "glmnet", "xgboost", "ggplot2")
 missing_packages <- required_packages[
   !vapply(required_packages, requireNamespace, logical(1), quietly = TRUE)
 ]
+DATA_DIR <- "/Users/albmunest/Desktop/Big Data/FIN550_Big_Data/"
 
 suppressPackageStartupMessages({
   library(data.table)
@@ -41,8 +42,6 @@ historic <- historic[is.finite(sale_price) & sale_price > 0]
 ``` {r Part 4}
 #Setup Possible Predictors for Models
 candidate_predictors <- c(
-  "meta_town_code",
-  "meta_nbhd",
   "char_hd_sf",
   "char_age",
   "char_apts",
@@ -66,16 +65,6 @@ candidate_predictors <- c(
   "char_type_resd",
   "char_attic_fnsh",
   "char_porch",
-  "geo_property_city",
-  "geo_property_zip",
-  "geo_ohare_noise",
-  "geo_floodplain",
-  "geo_fs_flood_factor",
-  "geo_fs_flood_risk_direction",
-  "geo_withinmr100",
-  "geo_withinmr101300",
-  "geo_school_elem_district",
-  "geo_school_hs_district",
   "econ_tax_rate",
   "econ_midincome",
   "ind_garage",
