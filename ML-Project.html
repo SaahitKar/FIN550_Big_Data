@@ -354,7 +354,7 @@ display: none;
 
 
 <pre class="r"><code>#Download Packages
-required_packages &lt;- c(&quot;data.table&quot;, &quot;Matrix&quot;, &quot;glmnet&quot;, &quot;xgboost&quot;, &quot;ggplot2&quot;)
+required_packages &lt;- c(&quot;data.table&quot;, &quot;Matrix&quot;, &quot;glmnet&quot;, &quot;xgboost&quot;, &quot;ggplot2&quot;, &quot;dplyr&quot;)
 missing_packages &lt;- required_packages[
   !vapply(required_packages, requireNamespace, logical(1), quietly = TRUE)
 ]
@@ -366,7 +366,9 @@ suppressPackageStartupMessages({
   library(glmnet)
   library(xgboost)
   library(ggplot2)
-})</code></pre>
+  library(dplyr)
+})
+options(scipen=99)</code></pre>
 <pre class="r"><code>#Setup Seed &amp; Files
 set.seed(28)
 N_FOLDS &lt;- 5
@@ -617,7 +619,7 @@ calculate_metrics &lt;- function(actual, predicted) {
 
 #Check for Cross-Validated RMSE results
 cv_results &lt;- rbind(
-  Baseline_Linear = calculate_metrics(y, oof_baseline),
+  Linear_Baseline = calculate_metrics(y, oof_baseline),
   LASSO = calculate_metrics(y, oof_lasso),
   XGBoost = calculate_metrics(y, oof_xgb)
 )
@@ -637,7 +639,7 @@ cat(&quot;\nCross-Validated Model Performance (Dollars):\n&quot;)</code></pre>
 <pre><code>##            model         MSE     RMSE      MAE
 ##          XGBoost 19314277864 138975.8  78662.2
 ##            LASSO 37220126646 192925.2 115557.3
-##  Baseline_Linear 65775723677 256467.8 153638.0</code></pre>
+##  Linear_Baseline 65775723677 256467.8 153638.0</code></pre>
 <pre class="r"><code>fwrite(cv_results, file.path(DATA_DIR, &quot;model_cv_results.csv&quot;))
 best_model &lt;- cv_results$model[1]
 message(&quot;\nBest Model on Cross-Validated MSE &gt;&gt;&gt; &quot;, best_model)</code></pre>
@@ -708,7 +710,7 @@ plot_data &lt;- data.frame(
 )
 
 #Create Performance Plot File
-performance_plot &lt;- ggplot(plot_data, aes(x = Model, y = RMSE, fill = Model)) +
+performance_plot &lt;- ggplot(plot_data, aes(x = reorder(Model, desc(RMSE)), y = RMSE, fill = Model)) +
   geom_col() +
   geom_text(
     aes(label = paste0(&quot;$&quot;, format(round(RMSE), big.mark = &quot;,&quot;))),
@@ -717,9 +719,9 @@ performance_plot &lt;- ggplot(plot_data, aes(x = Model, y = RMSE, fill = Model))
   ) +
   labs(
     title = paste0(
-      &quot;Cross-Validated RMSE&quot;
+      &quot;RMSE Decreases 45.8% with XGBoost vs Linear Baseline&quot;
     ),
-    subtitle = &quot;Five-Fold Comparison&quot;,
+    subtitle = &quot;Entmoot || Five-Fold Cross-Validated&quot;,
     x = &quot;Model&quot;,
     y = &quot;RMSE (USD)&quot;
   ) +
@@ -754,18 +756,6 @@ cat(&quot;Selected Model: &quot;, best_model, &quot;\n&quot;, sep = &quot;&quot;
 <pre><code>## Cross-Validated MAE:  $78,662</code></pre>
 <div id="additional-plots" class="section level2">
 <h2>Additional plots</h2>
-<pre class="r"><code>library(dplyr)</code></pre>
-<pre><code>## 
-## Attaching package: &#39;dplyr&#39;</code></pre>
-<pre><code>## The following objects are masked from &#39;package:data.table&#39;:
-## 
-##     between, first, last</code></pre>
-<pre><code>## The following objects are masked from &#39;package:stats&#39;:
-## 
-##     filter, lag</code></pre>
-<pre><code>## The following objects are masked from &#39;package:base&#39;:
-## 
-##     intersect, setdiff, setequal, union</code></pre>
 <pre class="r"><code>xgb.importance(xgb_fit) %&gt;%
   filter(Gain &gt; 0.01) %&gt;%
   ggplot(aes(y=Gain, x=reorder(Feature,Gain), fill=Feature)) + geom_bar(position=&#39;dodge&#39;,stat=&#39;identity&#39;) + theme(axis.text.x=element_text(angle=90,hjust=1,vjust=0.5))</code></pre>
