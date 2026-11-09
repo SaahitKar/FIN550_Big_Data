@@ -51,13 +51,8 @@ candidate_predictors <- c(
   "char_roof_cnst",
   "char_rooms",
   "char_beds",
-  "char_bsmt",
-  "char_bsmt_fin",
-  "char_heat",
-  "char_oheat",
   "char_air",
   "char_frpl",
-  "char_attic_type",
   "char_fbath",
   "char_hbath",
   "char_tp_plan",
@@ -65,12 +60,8 @@ candidate_predictors <- c(
   "char_gar1_size",
   "char_bldg_sf",
   "char_type_resd",
-  "char_attic_fnsh",
-  "char_porch",
   "econ_tax_rate",
-  "econ_midincome",
-  "ind_garage",
-  "ind_arms_length"
+  "econ_midincome"
 )
 
 #Ensure Columns Exist in Both Files & Can Be Used
@@ -439,4 +430,5 @@ cat("Cross-Validated MAE:  $",
 xgb.importance(xgb_fit) %>%
   filter(Gain > 0.01) %>%
   ggplot(aes(y=Gain, x=reorder(Feature,Gain), fill=Feature)) + geom_bar(position='dodge',stat='identity') + theme(axis.text.x=element_text(angle=90,hjust=1,vjust=0.5))
+coef(lasso_fit)
 ```
